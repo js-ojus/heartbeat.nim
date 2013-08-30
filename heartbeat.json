@@ -1,0 +1,25 @@
+{
+  "server": "smtp.gmail.com",
+  "port": 465,
+  "user": "xxx@example.com",
+  "password": "secret",
+  "name": "Example Company Support",
+  "address": "xxx@example.com",
+  "to": [
+    "responsible1@example.com",
+    "responsible2@example.com",
+  ],
+  "sites": [
+    {
+      "server": "www.example.com",
+      "protocol": "http",
+      "timeout": 4
+    },
+    {
+      "server": "www.example.com",
+      "protocol": "https",
+      "timeout": 4
+    },
+  ],
+  "interval": 600
+}
