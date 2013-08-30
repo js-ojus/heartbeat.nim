@@ -1,14 +1,7 @@
 # A script to try out small examples.
 
-import httpclient
-import json
-import os
-import osproc
-import smtp
-import sockets
-import streams
-import strutils
-import times
+import
+  httpclient, json, os, osproc, pegs, smtp, sockets, streams, strutils, times
 
 ## Is the site responding?
 proc isSiteUp(url: string, timeout: int): tuple[msg: string, ok: bool] =
@@ -42,11 +35,10 @@ proc doesServerExist(server: string): bool =
 
   while not sout.atEnd():
     var ln = streams.readLine(sout)
-    let idx1 = ln.find(", ANSWER:")
-    if idx1 > -1:
-      let idx3 = ln.find(",", idx1+1)
-      let idx2 = ln.rfind(" ", idx3)
-      let n = parseInt(ln[idx2+1..idx3-1])
+    let re = pegs.peg("""',' \s 'ANSWER:' \s {\d+} ','""")
+    var m: seq[string] = @[""]
+    if pegs.find(ln, re, m) >= 0:
+      let n = parseInt(m[0])
       if n > 0:
         result = true
       else:
@@ -59,22 +51,22 @@ proc doesServerExist(server: string): bool =
 ## Compose the alert message.
 proc alertMessage(url: string,
                   msg: string,
-                  tAt: string,
-                  tos: seq[string]): string =
+                  tos: seq[string],
+                  conf: PJsonNode): string =
   let sub = "[heartbeat] Alert for: " & url
-  let body = """
-This is a down-time alert message.
-Site: $1.
-Status: $2.
-At: $3.
-""".format(url, msg, tAt)
+  let body = "This is a down-time alert message.\n$1\n" % [msg]
+  let faddr = "$1 <$2>" % [conf["name"].str, conf["address"].str]
 
-  return $smtp.createMessage(sub, body, tos)
+  return $smtp.createMessage(sub, body, tos, @[], [("From", faddr)])
 
 ## Send the alert message.
-proc alert(msg: string,
+proc alert(emsg: string,
+           msg: string,
            tos: seq[string],
-           conf: PJsonNode): tuple[msg: string, ok: bool] =
+           conf: PJsonNode,
+           log: TFile): tuple[msg: string, ok: bool] =
+  log.writeln(emsg)
+
   let server = conf["server"].str
   let port = int(conf["port"].num)
   let faddr = conf["address"].str
@@ -84,7 +76,9 @@ proc alert(msg: string,
     cxn.sendMail(fromaddr = faddr, toaddrs = tos, msg = $msg)
     return ("", true)
   except:
-    return (getCurrentExceptionMsg(), false)
+    let errmsg = getCurrentExceptionMsg()
+    log.writeln("$1 \n\t[ERROR] : unable to send alert : $2." % [emsg, errmsg])
+    return (errmsg, false)
 
 ## Read the configuration.
 proc config(): tuple[conf: PJsonNode, ok: bool] =
@@ -95,8 +89,15 @@ proc config(): tuple[conf: PJsonNode, ok: bool] =
   except:
     return (nil, false)
 
-# Main.
-when isMainModule:
+## Collect all the e-mail addresses to send the alert to.
+proc collectAddrs(conf: PJsonNode): seq[string] =
+  var tos: seq[string] = @[]
+  for taddr in conf["to"].elems:
+    insert(tos, taddr.str)
+  return tos
+
+## Main.
+proc main() =
   # Read the configuration first.
   let res = config()
   if not res.ok:
@@ -105,9 +106,7 @@ when isMainModule:
     quit()
   let conf = res.conf
 
-  var tos: seq[string] = @[]
-  for taddr in conf["to"].elems:
-    insert(tos, taddr.str)
+  let tos = collectAddrs(conf)
 
   while true:
     # Open the log file.
@@ -121,24 +120,24 @@ when isMainModule:
       let tAt = $time & " " & tzs.nonDST & "/" & tzs.DST
 
       if not doesServerExist(server):
-        writeln(log, "$1 : [ERROR] $2 : $3.".format(tAt, server, "could not be resolved/reached"))
-        let msg = alertMessage(server, "could not be resolved/reached", tAt, tos)
-        let res = alert(msg, tos, conf)
-        if not res.ok:
-          writeln(log, "$1 : [ERROR] $2 : unable to send alert - $3.".format(tAt, url, res.msg))
+        let emsg = "$1 : [ERROR] $2 : $3." % [tAt, server, "could not be resolved/reached"]
+        let msg = alertMessage(server, emsg, tos, conf)
+        discard alert(emsg, msg, tos, conf, log)
         continue
 
       let res = isSiteUp(url, timeout = int(site["timeout"].num))
       if res.ok:
-        writeln(log, "$1 : [SUCCESS] $2.".format(tAt, url))
+        log.writeln("$1 : [SUCCESS] $2." % [tAt, url])
       else:
-        writeln(log, "$1 : [ERROR] $2 : $3.".format(tAt, url, res.msg))
-        let msg = alertMessage(url, res.msg, tAt, tos)
-        let res = alert(msg, tos, conf)
-        if not res.ok:
-          writeln(log, "$1 : [ERROR] $2 : unable to send alert - $3.".format(tAt, url, res.msg))
+        let emsg = "$1 : [ERROR] $2 : $3." % [tAt, url, res.msg]
+        let msg = alertMessage(url, emsg, tos, conf)
+        discard alert(emsg, msg, tos, conf, log)
 
       FlushFile(log)
 
     Close(log)
     sleep(int(conf["interval"].num) * 1000)
+
+#
+when isMainModule:
+  main()
